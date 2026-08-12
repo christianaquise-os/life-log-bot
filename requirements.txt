@@ -1,0 +1,5 @@
+python-telegram-bot==22.8
+anthropic==0.121.0
+APScheduler==3.11.3
+python-dotenv==1.0.1
+notion-client==3.1.0
