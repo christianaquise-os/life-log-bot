@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from notion_client import Client
 
-from src.config import NOTION_API_KEY, NOTION_DATABASE_ID
+from src.config import NOTION_API_KEY, NOTION_DATA_SOURCE_ID
 from src.db import get_conn
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ def _safe_push(session_id: int) -> None:
 
 def push(session_id: int) -> None:
     client = _client()
-    if client is None or not NOTION_DATABASE_ID:
+    if client is None or not NOTION_DATA_SOURCE_ID:
         return
 
     with get_conn() as conn:
@@ -38,8 +38,8 @@ def push(session_id: int) -> None:
         if row is None or row["status"] != "closed":
             return
 
-        existing = client.databases.query(
-            database_id=NOTION_DATABASE_ID,
+        existing = client.data_sources.query(
+            data_source_id=NOTION_DATA_SOURCE_ID,
             filter={"property": "SQLite ID", "number": {"equals": row["id"]}},
         )
         properties = _build_properties(row)
@@ -48,7 +48,10 @@ def push(session_id: int) -> None:
             page_id = existing["results"][0]["id"]
             client.pages.update(page_id=page_id, properties=properties)
         else:
-            page = client.pages.create(parent={"database_id": NOTION_DATABASE_ID}, properties=properties)
+            page = client.pages.create(
+                parent={"type": "data_source_id", "data_source_id": NOTION_DATA_SOURCE_ID},
+                properties=properties,
+            )
             page_id = page["id"]
 
         conn.execute(

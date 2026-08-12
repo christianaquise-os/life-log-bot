@@ -15,7 +15,10 @@ TELEGRAM_ALLOWED_CHAT_ID = int(os.environ.get("TELEGRAM_ALLOWED_CHAT_ID", "0") o
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY", "")
-NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID", "")
+# The data source ID (not the legacy "database ID") — Notion's current API
+# addresses the queryable/writable collection this way. Find it in a
+# database's fetch/create response under <data-source url="collection://...">.
+NOTION_DATA_SOURCE_ID = os.environ.get("NOTION_DATA_SOURCE_ID", "")
 
 TIMEZONE = os.environ.get("TIMEZONE", "Europe/Madrid")
 DIGEST_TIME = os.environ.get("DIGEST_TIME", "22:00")
