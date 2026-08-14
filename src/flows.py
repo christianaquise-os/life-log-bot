@@ -45,6 +45,21 @@ def _create_pending_action(conn, chat_id, kind, payload) -> None:
     )
 
 
+def _find_duplicate_reply(conn, chat_id, telegram_message_id) -> str | None:
+    """Returns a reply to send if this telegram_message_id was already
+    processed for this chat, else None. telegram_message_id=None (e.g. calls
+    from scripts/ that don't come from a real Telegram update) always misses."""
+    if telegram_message_id is None:
+        return None
+    row = conn.execute(
+        "SELECT id FROM raw_messages WHERE chat_id = ? AND telegram_message_id = ? LIMIT 1",
+        (chat_id, telegram_message_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return "Already got that one — didn't log it twice."
+
+
 def _insert_raw_message(conn, chat_id, telegram_message_id, raw_text) -> int:
     cur = conn.execute(
         "INSERT INTO raw_messages (chat_id, telegram_message_id, raw_text) VALUES (?, ?, ?)",
@@ -131,6 +146,10 @@ def _resolve_disambiguate_stop(conn, chat_id, pending, raw_text):
 
 def route_message(chat_id: int, raw_text: str, telegram_message_id: int | None = None) -> str:
     with get_conn() as conn:
+        duplicate_reply = _find_duplicate_reply(conn, chat_id, telegram_message_id)
+        if duplicate_reply is not None:
+            return duplicate_reply
+
         raw_id = _insert_raw_message(conn, chat_id, telegram_message_id, raw_text)
 
         pending = _get_pending_action(conn, chat_id)

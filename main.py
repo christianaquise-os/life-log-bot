@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 import logging
+import sys
 import urllib.parse
 import urllib.request
 
 from src import scheduler
-from src.config import TELEGRAM_BOT_TOKEN
+from src.config import TELEGRAM_BOT_TOKEN, ConfigError, validate_config
 from src.db import apply_migrations
 from src.telegram_bot import build_application
 
@@ -18,6 +19,7 @@ def _send_message_sync(chat_id: int, text: str) -> None:
 
 
 def main() -> None:
+    validate_config()
     apply_migrations()
     app = build_application()
     scheduler.start(_send_message_sync)
@@ -28,4 +30,8 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except ConfigError as e:
+        print(f"Startup aborted: {e}", file=sys.stderr)
+        sys.exit(1)

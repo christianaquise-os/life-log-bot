@@ -34,3 +34,27 @@ PILLARS = [
     "uncategorized",
 ]
 SUB_TRACKS = ["girlfriend", "friends_family"]
+
+
+class ConfigError(RuntimeError):
+    """Raised when required environment configuration is missing at startup."""
+
+
+def validate_config() -> None:
+    """Refuse to start rather than run silently broken. Notion vars are
+    optional/best-effort by design (see CLAUDE.md) and are NOT checked here."""
+    missing = []
+    if not TELEGRAM_BOT_TOKEN:
+        missing.append("TELEGRAM_BOT_TOKEN")
+    if not TELEGRAM_ALLOWED_CHAT_ID:  # also catches the "unset -> defaults to 0" case
+        missing.append("TELEGRAM_ALLOWED_CHAT_ID")
+    if not ANTHROPIC_API_KEY:
+        missing.append("ANTHROPIC_API_KEY")
+
+    if missing:
+        names = ", ".join(missing)
+        raise ConfigError(
+            f"Missing required configuration: {names}. "
+            f"Set {'it' if len(missing) == 1 else 'them'} in .env "
+            f"(copy .env.example to .env if you haven't yet) before starting the bot."
+        )

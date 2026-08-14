@@ -1,3 +1,6 @@
+import hashlib
+import json
+import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -5,6 +8,8 @@ import anthropic
 
 from src.config import ANTHROPIC_API_KEY, TIMEZONE
 from src.db import get_conn
+
+logger = logging.getLogger(__name__)
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -61,32 +66,71 @@ def _tally(chat_id: int, date_local: str) -> dict:
     return {"by_pillar": by_pillar, "activities": activities}
 
 
+def _compute_tally_hash(tally: dict) -> str:
+    # Normalize independently of the SQL row order (_tally()'s query has no
+    # ORDER BY) so two calls against identical underlying data always hash
+    # the same.
+    normalized = {
+        "by_pillar": dict(sorted(tally["by_pillar"].items())),
+        "activities": sorted(
+            (
+                {"activity": a["activity"], "pillar": a["pillar"], "seconds": a["seconds"] or 0}
+                for a in tally["activities"]
+            ),
+            key=lambda a: (a["pillar"], a["activity"], a["seconds"]),
+        ),
+    }
+    canonical = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def build_digest(chat_id: int, date_local: str | None = None) -> str:
     date_local = _today_local(date_local)
     tally = _tally(chat_id, date_local)
+    tally_hash = _compute_tally_hash(tally)
+
+    with get_conn() as conn:
+        cached = conn.execute(
+            "SELECT content_text, tally_hash FROM daily_digests WHERE chat_id = ? AND digest_date = ?",
+            (chat_id, date_local),
+        ).fetchone()
+    if cached and cached["tally_hash"] == tally_hash:
+        logger.info("digest cache hit for chat_id=%s date=%s", chat_id, date_local)
+        return cached["content_text"]
 
     if not tally["activities"]:
-        return f"Nothing logged yet for {date_local}."
+        content = f"Nothing logged yet for {date_local}."
+    else:
+        lines = [f"Date: {date_local}"]
+        for pillar, seconds in sorted(tally["by_pillar"].items(), key=lambda kv: -kv[1]):
+            minutes = round(seconds / 60)
+            lines.append(f"- {PILLAR_LABELS.get(pillar, pillar)}: {minutes} min")
+        lines.append("Activities:")
+        for a in tally["activities"]:
+            minutes = round((a["seconds"] or 0) / 60)
+            lines.append(f"- {a['activity']} ({PILLAR_LABELS.get(a['pillar'], a['pillar'])}, {minutes} min)")
+        tally_text = "\n".join(lines)
 
-    lines = [f"Date: {date_local}"]
-    for pillar, seconds in sorted(tally["by_pillar"].items(), key=lambda kv: -kv[1]):
-        minutes = round(seconds / 60)
-        lines.append(f"- {PILLAR_LABELS.get(pillar, pillar)}: {minutes} min")
-    lines.append("Activities:")
-    for a in tally["activities"]:
-        minutes = round((a["seconds"] or 0) / 60)
-        lines.append(f"- {a['activity']} ({PILLAR_LABELS.get(a['pillar'], a['pillar'])}, {minutes} min)")
+        logger.info("digest cache miss for chat_id=%s date=%s; calling Claude", chat_id, date_local)
+        response = client.messages.create(
+            model="claude-sonnet-5",
+            max_tokens=300,
+            system=PERSONALITY_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": tally_text}],
+        )
+        text_block = next((b.text for b in response.content if b.type == "text"), "")
+        content = text_block or tally_text
 
-    tally_text = "\n".join(lines)
-
-    response = client.messages.create(
-        model="claude-sonnet-5",
-        max_tokens=300,
-        system=PERSONALITY_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": tally_text}],
-    )
-    text_block = next((b.text for b in response.content if b.type == "text"), "")
-    return text_block or tally_text
+    with get_conn() as conn:
+        conn.execute(
+            """INSERT INTO daily_digests (chat_id, digest_date, content_text, tally_hash)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(chat_id, digest_date) DO UPDATE SET
+                   content_text = excluded.content_text,
+                   tally_hash = excluded.tally_hash""",
+            (chat_id, date_local, content, tally_hash),
+        )
+    return content
 
 
 def persist_and_get_nightly(chat_id: int) -> str | None:
@@ -99,16 +143,7 @@ def persist_and_get_nightly(chat_id: int) -> str | None:
         ).fetchone()
         if existing and existing["sent_at"]:
             return None
-
-    content = build_digest(chat_id, date_local)
-
-    with get_conn() as conn:
-        conn.execute(
-            """INSERT INTO daily_digests (chat_id, digest_date, content_text) VALUES (?, ?, ?)
-               ON CONFLICT(chat_id, digest_date) DO UPDATE SET content_text = excluded.content_text""",
-            (chat_id, date_local, content),
-        )
-    return content
+    return build_digest(chat_id, date_local)
 
 
 def mark_sent(chat_id: int, date_local: str | None = None) -> None:

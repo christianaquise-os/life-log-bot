@@ -82,5 +82,7 @@ def extract_intent(raw_text: str, now_local_iso: str, open_activity_names: list[
         tool_choice={"type": "tool", "name": "log_extraction"},
         messages=[{"role": "user", "content": f"{context}\n\nMessage: {raw_text!r}"}],
     )
-    tool_use = next(b for b in response.content if b.type == "tool_use")
+    tool_use = next((b for b in response.content if b.type == "tool_use"), None)
+    if tool_use is None:
+        raise RuntimeError("Claude did not return a tool_use block for extraction (possible refusal)")
     return tool_use.input
