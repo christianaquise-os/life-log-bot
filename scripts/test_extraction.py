@@ -18,7 +18,7 @@ CASES = [
     {"text": "I'm done", "open": ["laundry"], "expect_intent": "stop"},
     {"text": "finished", "open": [], "expect_intent": "stop"},
     {"text": "done with laundry", "open": ["laundry", "cooking"], "expect_intent": "stop"},
-    {"text": "I've been doing this for 2 hours", "open": [], "expect_intent": "log_duration"},
+    {"text": "I've been reading for 2 hours", "open": [], "expect_intent": "log_duration"},
     {"text": "read for 45 min", "open": [], "expect_intent": "log_duration"},
     {"text": "how did I do today", "open": [], "expect_intent": "query"},
     {"text": "asdkjh qweoiuqwe", "open": [], "expect_intent": "unclear"},

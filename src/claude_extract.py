@@ -41,8 +41,10 @@ EXTRACTION_TOOL = {
                 ),
             },
             "sub_track_guess": {
-                "type": ["string", "null"],
-                "enum": SUB_TRACKS + [None],
+                "anyOf": [
+                    {"type": "string", "enum": SUB_TRACKS},
+                    {"type": "null"},
+                ],
                 "description": "Only set when pillar_guess is 'relationships'.",
             },
             "duration_minutes": {
