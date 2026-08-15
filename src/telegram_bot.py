@@ -22,8 +22,11 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not _allowed(chat_id):
         return
     text = update.message.text
+    message_sent_at = update.message.date.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     try:
-        reply = await asyncio.to_thread(route_message, chat_id, text, update.message.message_id)
+        reply = await asyncio.to_thread(
+            route_message, chat_id, text, update.message.message_id, message_sent_at
+        )
     except Exception:
         logger.exception("route_message failed for chat_id=%s message_id=%s", chat_id, update.message.message_id)
         await update.message.reply_text(FAILURE_REPLY)

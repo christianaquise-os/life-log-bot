@@ -60,10 +60,10 @@ def _find_duplicate_reply(conn, chat_id, telegram_message_id) -> str | None:
     return "Already got that one — didn't log it twice."
 
 
-def _insert_raw_message(conn, chat_id, telegram_message_id, raw_text) -> int:
+def _insert_raw_message(conn, chat_id, telegram_message_id, raw_text, telegram_sent_at) -> int:
     cur = conn.execute(
-        "INSERT INTO raw_messages (chat_id, telegram_message_id, raw_text) VALUES (?, ?, ?)",
-        (chat_id, telegram_message_id, raw_text),
+        "INSERT INTO raw_messages (chat_id, telegram_message_id, raw_text, telegram_sent_at) VALUES (?, ?, ?, ?)",
+        (chat_id, telegram_message_id, raw_text, telegram_sent_at),
     )
     return cur.lastrowid
 
@@ -75,19 +75,19 @@ def _update_raw_message(conn, raw_id, parsed_intent, resulting_action) -> None:
     )
 
 
-def _open_session(conn, chat_id, pillar, sub_track, activity_name, raw_text) -> int:
+def _open_session(conn, chat_id, pillar, sub_track, activity_name, raw_text, event_ts: str) -> int:
     cur = conn.execute(
         """INSERT INTO sessions
            (chat_id, pillar, sub_track, activity_name, raw_text, source_intent, start_ts, status)
            VALUES (?, ?, ?, ?, ?, 'start_stop', ?, 'open')""",
-        (chat_id, pillar, sub_track, activity_name, raw_text, now_utc_iso()),
+        (chat_id, pillar, sub_track, activity_name, raw_text, event_ts),
     )
     return cur.lastrowid
 
 
-def _close_session(conn, session_id) -> int:
+def _close_session(conn, session_id, event_ts: str) -> int:
     row = conn.execute("SELECT start_ts FROM sessions WHERE id = ?", (session_id,)).fetchone()
-    end_ts = now_utc_iso()
+    end_ts = event_ts
     duration = int((_parse_ts(end_ts) - _parse_ts(row["start_ts"])).total_seconds())
     conn.execute(
         "UPDATE sessions SET end_ts = ?, duration_seconds = ?, status = 'closed', updated_at = ? WHERE id = ?",
@@ -96,9 +96,9 @@ def _close_session(conn, session_id) -> int:
     return duration
 
 
-def _log_completed(conn, chat_id, pillar, sub_track, activity_name, raw_text, duration_minutes) -> int:
+def _log_completed(conn, chat_id, pillar, sub_track, activity_name, raw_text, duration_minutes, event_ts: str) -> int:
     duration_seconds = int(duration_minutes * 60)
-    end_ts = now_utc_iso()
+    end_ts = event_ts
     start_ts = (_parse_ts(end_ts) - timedelta(seconds=duration_seconds)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     cur = conn.execute(
         """INSERT INTO sessions
@@ -118,7 +118,7 @@ def _format_duration(seconds: int) -> str:
     return f"{minutes}m"
 
 
-def _resolve_disambiguate_stop(conn, chat_id, pending, raw_text):
+def _resolve_disambiguate_stop(conn, chat_id, pending, raw_text, event_ts: str):
     payload = json.loads(pending["payload_json"])
     candidates = payload["candidates"]  # [{id, activity_name}, ...]
     reply_norm = raw_text.strip().lower()
@@ -139,23 +139,29 @@ def _resolve_disambiguate_stop(conn, chat_id, pending, raw_text):
         return f"Still not sure which one. Reply with a number:\n{listing}"
 
     _clear_pending_action(conn, pending["id"])
-    duration = _close_session(conn, match["id"])
+    duration = _close_session(conn, match["id"], event_ts)
     notion_sync.enqueue(match["id"])
     return f"Closed {match['activity_name']} — {_format_duration(duration)} logged."
 
 
-def route_message(chat_id: int, raw_text: str, telegram_message_id: int | None = None) -> str:
+def route_message(
+    chat_id: int,
+    raw_text: str,
+    telegram_message_id: int | None = None,
+    message_sent_at: str | None = None,
+) -> str:
     with get_conn() as conn:
         duplicate_reply = _find_duplicate_reply(conn, chat_id, telegram_message_id)
         if duplicate_reply is not None:
             return duplicate_reply
 
-        raw_id = _insert_raw_message(conn, chat_id, telegram_message_id, raw_text)
+        event_ts = message_sent_at or now_utc_iso()
+        raw_id = _insert_raw_message(conn, chat_id, telegram_message_id, raw_text, message_sent_at)
 
         pending = _get_pending_action(conn, chat_id)
         if pending is not None:
             if pending["kind"] == "disambiguate_stop":
-                reply = _resolve_disambiguate_stop(conn, chat_id, pending, raw_text)
+                reply = _resolve_disambiguate_stop(conn, chat_id, pending, raw_text, event_ts)
                 _update_raw_message(conn, raw_id, None, f"resolved:{pending['kind']}")
                 return reply
             # Any other pending kind (e.g. confirm_intent) is a soft prompt —
@@ -164,20 +170,21 @@ def route_message(chat_id: int, raw_text: str, telegram_message_id: int | None =
 
         open_sessions = _get_open_sessions(conn, chat_id)
         open_names = [r["activity_name"] for r in open_sessions]
-        extraction = extract_intent(raw_text, now_local_iso(), open_names)
-        reply = _handle_intent(conn, chat_id, raw_text, extraction, open_sessions)
+        event_local_iso = _parse_ts(event_ts).astimezone(ZoneInfo(TIMEZONE)).isoformat()
+        extraction = extract_intent(raw_text, event_local_iso, open_names)
+        reply = _handle_intent(conn, chat_id, raw_text, extraction, open_sessions, event_ts)
         _update_raw_message(conn, raw_id, extraction, reply)
         return reply
 
 
-def _handle_intent(conn, chat_id, raw_text, extraction, open_sessions) -> str:
+def _handle_intent(conn, chat_id, raw_text, extraction, open_sessions, event_ts: str) -> str:
     intent = extraction["intent"]
     activity_name = extraction["activity_name"]
     pillar = extraction["pillar_guess"]
     sub_track = extraction.get("sub_track_guess")
 
     if intent == "start":
-        session_id = _open_session(conn, chat_id, pillar, sub_track, activity_name, raw_text)
+        session_id = _open_session(conn, chat_id, pillar, sub_track, activity_name, raw_text, event_ts)
         return f"Started tracking {activity_name} ({pillar}) ⏳"
 
     if intent == "stop":
@@ -193,7 +200,7 @@ def _handle_intent(conn, chat_id, raw_text, extraction, open_sessions) -> str:
 
         if len(candidates) == 1:
             session_id = candidates[0]["id"]
-            duration = _close_session(conn, session_id)
+            duration = _close_session(conn, session_id, event_ts)
             notion_sync.enqueue(session_id)
             return f"Closed {candidates[0]['activity_name']} — {_format_duration(duration)} logged."
 
@@ -206,7 +213,9 @@ def _handle_intent(conn, chat_id, raw_text, extraction, open_sessions) -> str:
 
     if intent == "log_duration":
         duration_minutes = extraction.get("duration_minutes") or 0
-        session_id = _log_completed(conn, chat_id, pillar, sub_track, activity_name, raw_text, duration_minutes)
+        session_id = _log_completed(
+            conn, chat_id, pillar, sub_track, activity_name, raw_text, duration_minutes, event_ts
+        )
         notion_sync.enqueue(session_id)
         return f"Logged {activity_name} — {_format_duration(int(duration_minutes * 60))} ({pillar})."
 
