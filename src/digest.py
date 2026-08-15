@@ -30,7 +30,9 @@ PERSONALITY_SYSTEM_PROMPT = (
     "Given a tally of today's logged activities, write 2-4 sentences: what was "
     "logged, the total time per pillar (only pillars with time), and one line "
     "framing today's effort as a concrete accomplishment. No headers, no bullet "
-    "lists, just short prose. Do not invent activities not in the tally."
+    "lists, just short prose. Do not invent activities not in the tally. If a "
+    "mood line is present in the tally, weave a brief, natural mention of it "
+    "into the recap."
 )
 
 
@@ -46,6 +48,10 @@ def _tally(chat_id: int, date_local: str) -> dict:
             "SELECT pillar, activity_name, duration_seconds, start_ts FROM sessions "
             "WHERE chat_id = ? AND status = 'closed'",
             (chat_id,),
+        ).fetchall()
+        mood_rows = conn.execute(
+            "SELECT mood_score, note FROM mood_entries WHERE chat_id = ? AND local_date = ? ORDER BY id",
+            (chat_id, date_local),
         ).fetchall()
 
     tz = ZoneInfo(TIMEZONE)
@@ -64,13 +70,16 @@ def _tally(chat_id: int, date_local: str) -> dict:
             {"activity": row["activity_name"], "pillar": row["pillar"], "seconds": row["duration_seconds"]}
         )
 
-    return {"by_pillar": by_pillar, "activities": activities}
+    mood_entries = [{"score": r["mood_score"], "note": r["note"]} for r in mood_rows]
+
+    return {"by_pillar": by_pillar, "activities": activities, "mood_entries": mood_entries}
 
 
 def _compute_tally_hash(tally: dict) -> str:
     # Normalize independently of the SQL row order (_tally()'s query has no
-    # ORDER BY) so two calls against identical underlying data always hash
-    # the same.
+    # ORDER BY on sessions) so two calls against identical underlying data
+    # always hash the same. mood_entries is already deterministically
+    # ordered (ORDER BY id in the query), so no re-sorting needed there.
     normalized = {
         "by_pillar": dict(sorted(tally["by_pillar"].items())),
         "activities": sorted(
@@ -80,6 +89,7 @@ def _compute_tally_hash(tally: dict) -> str:
             ),
             key=lambda a: (a["pillar"], a["activity"], a["seconds"]),
         ),
+        "mood_entries": tally["mood_entries"],
     }
     canonical = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -99,17 +109,29 @@ def build_digest(chat_id: int, date_local: str | None = None) -> str:
         logger.info("digest cache hit for chat_id=%s date=%s", chat_id, date_local)
         return cached["content_text"]
 
-    if not tally["activities"]:
+    if not tally["activities"] and not tally["mood_entries"]:
         content = f"Nothing logged yet for {date_local}."
     else:
         lines = [f"Date: {date_local}"]
         for pillar, seconds in sorted(tally["by_pillar"].items(), key=lambda kv: -kv[1]):
             minutes = round(seconds / 60)
             lines.append(f"- {PILLAR_LABELS.get(pillar, pillar)}: {minutes} min")
-        lines.append("Activities:")
-        for a in tally["activities"]:
-            minutes = round((a["seconds"] or 0) / 60)
-            lines.append(f"- {a['activity']} ({PILLAR_LABELS.get(a['pillar'], a['pillar'])}, {minutes} min)")
+        if tally["activities"]:
+            lines.append("Activities:")
+            for a in tally["activities"]:
+                minutes = round((a["seconds"] or 0) / 60)
+                lines.append(f"- {a['activity']} ({PILLAR_LABELS.get(a['pillar'], a['pillar'])}, {minutes} min)")
+        if tally["mood_entries"]:
+            scores = [m["score"] for m in tally["mood_entries"] if m["score"] is not None]
+            if scores:
+                avg = round(sum(scores) / len(scores), 1)
+                lines.append(f"Mood: avg {avg}/10 across {len(tally['mood_entries'])} check-in(s)")
+            else:
+                lines.append(f"Mood: {len(tally['mood_entries'])} check-in(s), no numeric score")
+            for m in tally["mood_entries"]:
+                if m["note"]:
+                    score_part = f"{m['score']}/10 - " if m["score"] is not None else ""
+                    lines.append(f'- {score_part}"{m["note"]}"')
         tally_text = "\n".join(lines)
 
         logger.info("digest cache miss for chat_id=%s date=%s; calling Claude", chat_id, date_local)

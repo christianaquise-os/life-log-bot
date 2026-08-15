@@ -77,3 +77,39 @@ def test_cache_invalidates_on_new_session(tmp_db, monkeypatch):
     digest.build_digest(chat_id)
 
     assert calls["n"] == 2
+
+
+def test_mood_only_day_is_not_nothing_logged(tmp_db, monkeypatch):
+    chat_id = 12
+    monkeypatch.setattr("src.digest.client.messages.create", lambda *a, **kw: _FakeResponse())
+
+    from src.mood import log_mood
+
+    now = datetime.now(timezone.utc).strftime(FMT)
+    log_mood(chat_id, "8 great day", now)
+
+    reply = digest.build_digest(chat_id)
+    assert "Nothing logged" not in reply
+
+
+def test_cache_invalidates_on_new_mood_entry(tmp_db, monkeypatch):
+    chat_id = 13
+    _seed_session(chat_id, "reading")
+
+    calls = {"n": 0}
+
+    def counting_create(*a, **kw):
+        calls["n"] += 1
+        return _FakeResponse()
+
+    monkeypatch.setattr("src.digest.client.messages.create", counting_create)
+
+    digest.build_digest(chat_id)
+
+    from src.mood import log_mood
+
+    now = datetime.now(timezone.utc).strftime(FMT)
+    log_mood(chat_id, "6", now)
+    digest.build_digest(chat_id)
+
+    assert calls["n"] == 2
