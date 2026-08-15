@@ -1,7 +1,7 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from src import digest, notion_sync
+from src import db_backup, digest, notion_sync, session_hygiene
 from src.config import DIGEST_TIME, TELEGRAM_ALLOWED_CHAT_ID, TIMEZONE
 
 _scheduler = BackgroundScheduler(timezone=TIMEZONE)
@@ -18,6 +18,8 @@ def start(send_message_fn) -> None:
 
     _scheduler.add_job(_nightly_digest, CronTrigger(hour=hour, minute=minute))
     _scheduler.add_job(notion_sync.resync_unsynced, "interval", minutes=10)
+    _scheduler.add_job(session_hygiene.close_stale_open_sessions, "interval", hours=1)
+    _scheduler.add_job(db_backup.backup_and_prune, CronTrigger(hour=3, minute=0))
     _scheduler.start()
 
 

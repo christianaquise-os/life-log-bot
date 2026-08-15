@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 
 import anthropic
 
+from src import api_usage
 from src.config import ANTHROPIC_API_KEY, TIMEZONE
 from src.db import get_conn
 
@@ -120,6 +121,7 @@ def build_digest(chat_id: int, date_local: str | None = None) -> str:
         )
         text_block = next((b.text for b in response.content if b.type == "text"), "")
         content = text_block or tally_text
+        api_usage.record(response, purpose="digest")
 
     with get_conn() as conn:
         conn.execute(

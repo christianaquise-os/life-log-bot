@@ -1,5 +1,6 @@
 import anthropic
 
+from src import api_usage
 from src.config import ANTHROPIC_API_KEY, PILLARS, SUB_TRACKS
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -85,4 +86,5 @@ def extract_intent(raw_text: str, now_local_iso: str, open_activity_names: list[
     tool_use = next((b for b in response.content if b.type == "tool_use"), None)
     if tool_use is None:
         raise RuntimeError("Claude did not return a tool_use block for extraction (possible refusal)")
+    api_usage.record(response, purpose="extract_intent")
     return tool_use.input

@@ -27,11 +27,23 @@ def _get_open_sessions(conn, chat_id):
     ).fetchall()
 
 
+PENDING_ACTION_TTL_MINUTES = 30
+
+
 def _get_pending_action(conn, chat_id):
-    return conn.execute(
+    row = conn.execute(
         "SELECT * FROM pending_actions WHERE chat_id = ? ORDER BY id DESC LIMIT 1",
         (chat_id,),
     ).fetchone()
+    if row is None:
+        return None
+    if row["expires_at"] and _parse_ts(row["expires_at"]) < datetime.now(timezone.utc):
+        # Abandoned clarification (bot restart, or the user just never replied) --
+        # treat it as if it never existed rather than letting it hijack a
+        # future, unrelated message.
+        _clear_pending_action(conn, row["id"])
+        return None
+    return row
 
 
 def _clear_pending_action(conn, pending_id) -> None:
@@ -39,9 +51,12 @@ def _clear_pending_action(conn, pending_id) -> None:
 
 
 def _create_pending_action(conn, chat_id, kind, payload) -> None:
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=PENDING_ACTION_TTL_MINUTES)).strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
     conn.execute(
-        "INSERT INTO pending_actions (chat_id, kind, payload_json) VALUES (?, ?, ?)",
-        (chat_id, kind, json.dumps(payload)),
+        "INSERT INTO pending_actions (chat_id, kind, payload_json, expires_at) VALUES (?, ?, ?, ?)",
+        (chat_id, kind, json.dumps(payload), expires_at),
     )
 
 
