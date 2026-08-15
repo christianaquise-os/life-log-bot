@@ -14,6 +14,8 @@ TELEGRAM_ALLOWED_CHAT_ID = int(os.environ.get("TELEGRAM_ALLOWED_CHAT_ID", "0") o
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
+OMDB_API_KEY = os.environ.get("OMDB_API_KEY", "")
+
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY", "")
 # The data source ID (not the legacy "database ID") — Notion's current API
 # addresses the queryable/writable collection this way. Find it in a

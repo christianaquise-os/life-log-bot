@@ -9,10 +9,29 @@ from src.digest import build_digest
 from src.flows import route_message
 from src.habits import create_habit, list_habits, log_habit
 from src.mood import log_mood
+from src.movies import add_movie, list_watchlist, mark_watched
+from src.receipts import handle_receipt_photo
 
 logger = logging.getLogger(__name__)
 
 FAILURE_REPLY = "Something went wrong processing that — try again in a moment."
+
+HELP_TEXT = (
+    "Things you can say:\n"
+    '- "started X" / "I\'m done" / "did X for 30 min" — activity logging\n'
+    '- "how did I do today" or /today — daily summary\n'
+    "- send a photo of a receipt — logs it as an expense\n\n"
+    "Commands:\n"
+    "/today — today's digest\n"
+    "/mood <score 1-10> [note] — log a mood check-in\n"
+    "/newhabit <name> — create a habit\n"
+    "/log <habit> — log today's completion\n"
+    "/habits — list habits and streaks\n"
+    "/addmovie <title> — add to watchlist (needs OMDB_API_KEY)\n"
+    "/watched <title> [rating] — mark a movie watched\n"
+    "/watchlist — list movies to watch\n"
+    "/help — this message"
+)
 
 
 def _allowed(chat_id: int) -> bool:
@@ -108,17 +127,96 @@ async def on_habits(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(reply)
 
 
+async def on_addmovie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    if not _allowed(chat_id):
+        return
+    title = " ".join(context.args) if context.args else ""
+    try:
+        reply = await asyncio.to_thread(add_movie, chat_id, title)
+    except Exception:
+        logger.exception("add_movie failed for chat_id=%s", chat_id)
+        await update.message.reply_text(FAILURE_REPLY)
+        return
+    await update.message.reply_text(reply)
+
+
+async def on_watched(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    if not _allowed(chat_id):
+        return
+    args = context.args or []
+    rating = None
+    title_parts = args
+    if args and args[-1].isdigit():
+        rating = int(args[-1])
+        title_parts = args[:-1]
+    title_query = " ".join(title_parts)
+    try:
+        reply = await asyncio.to_thread(mark_watched, chat_id, title_query, rating)
+    except Exception:
+        logger.exception("mark_watched failed for chat_id=%s", chat_id)
+        await update.message.reply_text(FAILURE_REPLY)
+        return
+    await update.message.reply_text(reply)
+
+
+async def on_watchlist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    if not _allowed(chat_id):
+        return
+    try:
+        reply = await asyncio.to_thread(list_watchlist, chat_id)
+    except Exception:
+        logger.exception("list_watchlist failed for chat_id=%s", chat_id)
+        await update.message.reply_text(FAILURE_REPLY)
+        return
+    await update.message.reply_text(reply)
+
+
+async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    if not _allowed(chat_id):
+        return
+    photo = update.message.photo[-1]  # largest available size
+    caption = update.message.caption
+    message_sent_at = _message_sent_at(update)
+    try:
+        file = await context.bot.get_file(photo.file_id)
+        image_bytes = bytes(await file.download_as_bytearray())
+        reply = await asyncio.to_thread(
+            handle_receipt_photo, chat_id, image_bytes, "image/jpeg", photo.file_id, caption, message_sent_at
+        )
+    except Exception:
+        logger.exception("receipt photo handling failed for chat_id=%s", chat_id)
+        await update.message.reply_text(FAILURE_REPLY)
+        return
+    await update.message.reply_text(reply)
+
+
+async def on_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat_id = update.effective_chat.id
+    if not _allowed(chat_id):
+        return
+    await update.message.reply_text(HELP_TEXT)
+
+
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error("Unhandled exception while processing update %s", update, exc_info=context.error)
 
 
 def build_application() -> Application:
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    app.add_handler(CommandHandler("help", on_help))
     app.add_handler(CommandHandler("today", on_today))
     app.add_handler(CommandHandler("mood", on_mood))
     app.add_handler(CommandHandler("newhabit", on_newhabit))
     app.add_handler(CommandHandler("log", on_log_habit))
     app.add_handler(CommandHandler("habits", on_habits))
+    app.add_handler(CommandHandler("addmovie", on_addmovie))
+    app.add_handler(CommandHandler("watched", on_watched))
+    app.add_handler(CommandHandler("watchlist", on_watchlist))
+    app.add_handler(MessageHandler(filters.PHOTO, on_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     app.add_error_handler(on_error)
     return app

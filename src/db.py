@@ -8,6 +8,17 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # This app opens multiple independent connections concurrently by design
+    # (asyncio.to_thread per request + background scheduler jobs + nested
+    # connections like api_usage.record() opening its own while an outer
+    # request connection is still uncommitted) -- a "database is locked"
+    # error surfaced live from exactly this pattern. WAL lets readers and a
+    # writer proceed without blocking each other; busy_timeout is an
+    # explicit backstop for writer-vs-writer contention (Python's sqlite3
+    # already retries for 5s by default, but don't rely on that default
+    # going unchanged -- state it here).
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
     return conn
 
 

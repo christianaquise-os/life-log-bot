@@ -5,9 +5,14 @@ This file provides guidance to Claude Code when working in this repository.
 ## What this is
 
 A single always-on Python process that runs a Telegram bot for personal
-activity/time logging. Christian messages the bot in natural language
-("started laundry", "done", "read for 45 min") and the bot infers what he
-means, logs it, and tracks running totals per life pillar.
+life tracking. The core is activity/time logging via natural language
+("started laundry", "done", "read for 45 min") — the bot infers what
+Christian means, logs it, and tracks running totals per life pillar. Layered
+on top: mood/journal check-ins, passive habit tracking with streaks, a movie
+watchlist, and receipt-photo expense logging. Every new pillar beyond the
+core is a **dedicated Telegram slash command**, not a new intent on
+`src/claude_extract.py`'s extraction tool — see *Adding a new pillar* below
+for why that boundary is load-bearing, not incidental.
 
 **SQLite (`data/activity.db`) is the only source of truth.** Notion is a
 best-effort, read-only mirror — see *Why SQLite is authoritative* below for
@@ -42,18 +47,52 @@ and mirrored in `src/config.py::PILLARS`:
    than being forced into Leisure or Career, because forcing a guess would
    corrupt pillar totals; better an honest "uncategorized" than a wrong pillar.
 
-## Where future pillars/features hook in
+## Adding a new pillar
 
-This v1 does activity/time logging only. Adding a new *kind* of logged thing
-generally does **not** require a schema change:
+`src/claude_extract.py`'s `EXTRACTION_TOOL` is deliberately narrow — five
+intents for the core activity-logging loop, nothing else. It stays that way:
+bloating its schema has a real cost (Claude Haiku 4.5 needs a 4096-token
+stable prefix before Anthropic's prompt caching would even help, so there's
+no caching upside) and risks cross-intent ambiguity between activity logging
+and whatever the new pillar is. Every pillar added after v1 is instead a
+**dedicated slash command** with its own handler in `src/telegram_bot.py`
+and its own module in `src/`:
 
-- **Finance / receipts**: would add its own ingestion path (e.g. a photo
-  handler that OCRs a receipt) that writes rows into the existing `sessions`
-  table — the `finance` pillar key already exists. No touch to `flows.py`'s
-  start/stop/log_duration core.
-- **Habit tracking, movie watchlist, mood/journal**: these aren't time-boxed
-  activities, so they'd get their own table(s) entirely. Still no change to
-  the sessions core.
+- **Mood/journal** (`src/mood.py`, `/mood`) — a 1-10 score and/or a note.
+  The one pillar that *does* feed the digest: `digest.py::_tally()` reads
+  `mood_entries` directly, and `_compute_tally_hash()` includes it so the
+  digest cache still invalidates correctly when a mood entry changes.
+- **Habits** (`src/habits.py`, `/newhabit`, `/log`, `/habits`) — passive
+  logging only, no proactive reminders, ever. Streaks are pure local-date
+  arithmetic (`_compute_streak`); the "never miss twice" framing only
+  surfaces in the `/log` reply, never as an unprompted message.
+- **Movies** (`src/movies.py`, `/addmovie`, `/watched`, `/watchlist`) — the
+  one pillar with an external dependency (`OMDB_API_KEY`, optional, same
+  "reply gracefully if unset" convention as the Notion vars below).
+- **Receipts/finance** (`src/receipt_extract.py` + `src/receipts.py`,
+  photo handler) — the one pillar that *does* write into `sessions`
+  (pillar `finance`, `source_intent='expense'`, zero duration) so it flows
+  through the existing digest/Notion machinery for free, alongside its own
+  `expenses` table for the money-specific fields (merchant/amount/currency).
+  This is why `sessions.source_intent`'s CHECK constraint had to grow a
+  third value — see *Extending a CHECK constraint* below, since that's the
+  one migration in this repo that isn't a plain `CREATE`/`ALTER ADD COLUMN`.
+
+Whether a new pillar should also write a `sessions` row (free digest/Notion
+integration, like receipts) or live entirely in its own table (like habits)
+depends on whether it's naturally a point-in-time or duration event that
+belongs in a pillar total — habits and movies aren't, mood and expenses are.
+
+## Extending a CHECK constraint
+
+SQLite has no `ALTER TABLE ... ALTER CHECK`. `migrations/009_*.sql` is the
+reference pattern for when a future change needs to widen one: create a
+`_new` table with the updated CHECK, copy every row across, drop the old
+table, rename, then recreate any indexes (dropped along with the old table).
+`tests/test_migration_009.py` is the reference pattern for testing one —
+apply migrations up to but not including the rebuild, seed a row under the
+old constraint, apply the rebuild, then assert the row survived and both the
+new and old constraint values behave correctly.
 
 ## Why SQLite is authoritative and Notion is not
 
@@ -96,16 +135,46 @@ Local-time boundaries — "what counts as today" for the digest, `TIMEZONE`
 in `.env` — are computed only in query/display code (`src/digest.py`), never
 in storage. Don't let a local-time value leak into a stored timestamp.
 
+**Use the message's real send time, not processing time.** `route_message()`
+threads a single `event_ts` (Telegram's `update.message.date`, not
+`datetime.now()`) through every function that stamps a domain timestamp —
+`_open_session`, `_close_session`, `_log_completed`, `_resolve_disambiguate_stop`.
+This matters because the bot can process a backlog after being offline: two
+messages sent minutes apart but drained within milliseconds of each other on
+restart must still produce a correct duration, not a near-zero one. Every
+new pillar's Telegram handler follows the same pattern — read
+`update.message.date`, pass it down, never call `datetime.now()` for a
+domain event. `raw_messages.telegram_sent_at` stores this separately from
+`received_at` (processing time) specifically so this class of bug is
+directly visible by comparing the two columns.
+
 ## Working conventions
 
 - **Adding a migration**: create a new numbered file in `migrations/`
-  (`002_whatever.sql`), then re-run `python scripts/init_db.py` — it applies
-  only files not yet recorded in `schema_migrations`.
+  (`010_whatever.sql`, continuing the sequence), then re-run
+  `python scripts/init_db.py` — it applies only files not yet recorded in
+  `schema_migrations`.
+- **Tests**: `pytest` (`pip install -r requirements-dev.txt` first) — fast,
+  free, zero live API calls. Every Claude call site is mocked; the
+  `tmp_db` fixture in `tests/conftest.py` isolates each test's database.
+  **Patch `src.db.DB_PATH`, not `src.config.DB_PATH`** — `src/db.py` binds
+  the name into its own namespace at import time, so patching the original
+  has no effect. `scripts/test_extraction.py` is a separate, deliberately
+  live-API sanity script — run it after touching `claude_extract.py`, not
+  as part of `pytest`.
 - **Manual verification**: see the verification table in `README.md`. The
   short version: exercise the bot via Telegram, then check the actual SQLite
   rows (`sqlite3 data/activity.db "select ..."`) rather than trusting the
   bot's own reply text — the two can disagree, and that disagreement is the
   bug to find.
+- **Cost visibility**: `python scripts/usage_report.py` sums today's/this
+  month's token spend from the `api_usage` table (populated by
+  `src/api_usage.py::record`, called after every Claude API call). Never
+  load-bearing — a recording failure is logged and swallowed, never breaks
+  the actual bot response.
+- **Backups**: `python scripts/backup_db.py` for an on-demand backup; the
+  scheduler also runs one daily at 3am, keeping the last 14
+  (`src/db_backup.py`, `data/backups/`, gitignored).
 - **Don't touch** `~/nutrition-plan-export/` or `~/My_finance/Recibos/` —
   unrelated existing projects that happen to live as sibling directories.
 

@@ -14,6 +14,16 @@ Learning, Leisure).
 - **"I've been doing this for 2 hours"** / **"read for 45 min"** — logs a
   completed activity directly, no timer needed.
 - **"how did I do today"** or **/today** — get today's summary on demand.
+- **Send a photo of a receipt** — logs it as an expense (merchant, date,
+  total) and tags it to the Finance pillar.
+- **/mood `<score 1-10>` `[note]`** — a quick mood check-in, shows up in the
+  daily digest.
+- **/newhabit `<name>`**, **/log `<name>`**, **/habits** — passive habit
+  tracking with streaks. No reminders — you log when you did it, the bot
+  never nags.
+- **/addmovie `<title>`**, **/watched `<title> [rating]`**, **/watchlist** —
+  a movie watchlist with auto-fetched details (needs `OMDB_API_KEY`).
+- **/help** — see this list from inside Telegram.
 
 Every evening (default 22:00, `Europe/Madrid`) it sends you an automatic
 recap of the day.
@@ -44,8 +54,24 @@ recap of the day.
 7. (Optional) Wire up the Notion mirror — see `CLAUDE.md` → *Why SQLite is
    authoritative*. Not required for the bot to work; it's a nice-to-have
    read-only view.
-8. Once it's working manually, set up always-on running via `launchd`
+8. (Optional) Get a free `OMDB_API_KEY` at
+   [omdbapi.com/apikey.aspx](https://www.omdbapi.com/apikey.aspx) if you want
+   the movie watchlist commands to work. Without it they just reply that the
+   feature isn't configured — everything else still works.
+9. Once it's working manually, set up always-on running via `launchd`
    (Mac) or `systemd` (VPS) — templates in `deploy/`.
+
+## Running the tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+Fast and free — every Claude API call is mocked, no live network calls or
+API keys needed. `scripts/test_extraction.py` is a separate, deliberately
+live-API sanity script (uses your real `ANTHROPIC_API_KEY`); run it after
+changing anything in `src/claude_extract.py`.
 
 ## Reading the daily digest
 
